@@ -11,12 +11,8 @@ from fastapi.security import OAuth2PasswordBearer
 import jwt
 from redis.exceptions import RedisError
 from datetime import timedelta
+from app.core.config import settings
 
-# Настройки
-SECRET_KEY = "your_secret_key"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
-
-# Подключение к Redis
 try:
     redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
     redis_client.ping()
@@ -47,13 +43,13 @@ async def login(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid username or password")
 
     # Генерация токена с временем жизни
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": db_user.username}, expires_delta=access_token_expires)
 
     # Сохранение токена в Redis, если он доступен
     if redis_client:
         try:
-            redis_client.setex(f"token:{db_user.username}", ACCESS_TOKEN_EXPIRE_MINUTES * 60, access_token)
+            redis_client.setex(f"token:{db_user.username}", settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, access_token)
             logging.info(f"✅ Токен пользователя {db_user.username} сохранён в Redis")
         except RedisError:
             logging.error("⚠️ Ошибка при сохранении токена в Redis")
@@ -72,7 +68,7 @@ async def protected_route(token: str = Depends(oauth2_scheme)):
     """
     try:
         # Декодируем токен
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("sub")
 
         # Проверяем токен в Redis (если Redis доступен)
@@ -103,7 +99,7 @@ async def logout(token: str = Depends(oauth2_scheme)):
     """
     try:
         # Декодируем токен
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("sub")
 
         if redis_client:
