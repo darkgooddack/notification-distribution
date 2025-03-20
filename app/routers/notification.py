@@ -120,5 +120,5 @@ async def toggle_notifications(
     db_user.receive_notifications = not db_user.receive_notifications
     db.commit()
     db.refresh(db_user)
-    logging.info(f"✅ Переключатель сработал на {db_user.receive_notifications}!")
+    logging.info(f"✅ Переключатель сработал на {db_user.receive_notifications} для пользователя {username}!")
     return {"receive_notifications": db_user.receive_notifications}
