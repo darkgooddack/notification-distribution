@@ -6,6 +6,7 @@ from app.models.base import get_db
 from app.models.user import User
 from app.models.notification import Notification
 from app.schemas.notification import NotificationCreate
+from app.models.notification import user_notifications
 import logging
 
 router = APIRouter()
@@ -21,13 +22,13 @@ def get_rabbitmq_connection():
         logging.error(f"❌ Ошибка подключения к RabbitMQ: {e}")
         return None
 
-
 @router.post("/send_notifications", summary="Отправка уведомлений пользователям")
 async def send_notifications(notification: NotificationCreate, db: Session = Depends(get_db)):
     """
     **Отправка уведомлений пользователям**
     - Создаёт уведомление в БД.
     - Отправляет сообщение через RabbitMQ только тем, у кого `receive_notifications=True`.
+    - Добавляет запись в промежуточную таблицу для связи пользователя и уведомления.
     """
     # Создаём уведомление в БД
     db_notification = Notification(title=notification.title, message=notification.message)
@@ -50,7 +51,7 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
     channel = connection.channel()
     channel.queue_declare(queue="notifications")
 
-    # Рассылаем уведомления
+    # Рассылаем уведомления и добавляем связи в промежуточную таблицу
     for user in users:
         message = {
             "user_id": user.id,
@@ -61,6 +62,12 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
         }
         channel.basic_publish(exchange="", routing_key="notifications", body=json.dumps(message))
         logging.info(f"✅ Уведомление отправлено пользователю {user.username} через RabbitMQ")
+
+        # Добавляем запись в таблицу user_notifications
+        user_notification = user_notifications.insert().values(user_id=user.id, notification_id=db_notification.id)
+        db.execute(user_notification)
+        db.commit()
+        logging.info(f"✅ Связь пользователя {user.username} с уведомлением добавлена в таблицу")
 
     connection.close()
 
