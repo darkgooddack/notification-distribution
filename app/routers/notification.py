@@ -4,6 +4,7 @@ import jwt
 import pika
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+from starlette import status
 
 from app.core.config import settings
 from app.crud.user import get_user_by_username
@@ -98,3 +99,26 @@ async def get_user_notifications(
         raise HTTPException(status_code=401, detail="Invalid token")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/toggle-notifications")
+async def toggle_notifications(
+        token: str = Depends(oauth2_scheme),
+        db: Session = Depends(get_db)
+):
+    payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+    username = payload.get("sub")
+
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    db_user = db.query(User).filter(User.username == username).first()
+
+    if db_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    db_user.receive_notifications = not db_user.receive_notifications
+    db.commit()
+    db.refresh(db_user)
+    logging.info(f"✅ Переключатель сработал на {db_user.receive_notifications}!")
+    return {"receive_notifications": db_user.receive_notifications}
