@@ -3,7 +3,6 @@ import redis
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.models.base import get_db
-from app.models.user import User
 from app.core.security import verify_password, create_access_token
 from app.crud.user import get_user_by_username
 from app.schemas.user import UserCreate
@@ -23,8 +22,8 @@ except RedisError:
 router = APIRouter()
 logging.basicConfig(level=logging.INFO)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+#oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 @router.post("/token", summary="Авторизация пользователя")
 async def login(user: UserCreate, db: Session = Depends(get_db)):
@@ -57,7 +56,6 @@ async def login(user: UserCreate, db: Session = Depends(get_db)):
     logging.info(f"✅ Выдан токен пользователю: {db_user.username}")
     return {"access_token": access_token, "token_type": "bearer"}
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 @router.get("/protected")
 async def protected_route(token: str = Depends(oauth2_scheme)):
