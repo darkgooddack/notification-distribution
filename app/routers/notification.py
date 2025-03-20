@@ -1,12 +1,18 @@
 import json
+
+import jwt
 import pika
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.crud.user import get_user_by_username
+from app.crud.notification import get_user_id_from_redis
+from app.models import User
 from app.models.base import get_db
-from app.models.user import User
-from app.models.notification import Notification
-from app.schemas.notification import NotificationCreate
-from app.models.notification import user_notifications
+from app.models.notification import Notification, user_notifications
+from app.routers.auth import oauth2_scheme
+from app.schemas.notification import NotificationCreate, NotificationOut
 import logging
 
 router = APIRouter()
@@ -27,8 +33,7 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
     """
     **Отправка уведомлений пользователям**
     - Создаёт уведомление в БД.
-    - Отправляет сообщение через RabbitMQ только тем, у кого `receive_notifications=True`.
-    - Добавляет запись в промежуточную таблицу для связи пользователя и уведомления.
+    - Отправляет сообщение через RabbitMQ для дальнейшей обработки.
     """
     # Создаём уведомление в БД
     db_notification = Notification(title=notification.title, message=notification.message)
@@ -36,39 +41,60 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
     db.commit()
     db.refresh(db_notification)
 
-    # Получаем пользователей, которые подписаны на уведомления
-    users = db.query(User).filter(User.receive_notifications == True).all()
-
-    if not users:
-        logging.info("⚠️ Нет пользователей с активными уведомлениями.")
-        return {"message": "Нет пользователей для уведомления"}
-
     # Создаём подключение к RabbitMQ
     connection = get_rabbitmq_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Ошибка подключения к RabbitMQ")
 
     channel = connection.channel()
-    channel.queue_declare(queue="notifications")
+    channel.queue_declare(queue="notification_tasks")
 
-    # Рассылаем уведомления и добавляем связи в промежуточную таблицу
-    for user in users:
-        message = {
-            "user_id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "title": notification.title,
-            "message": notification.message,
-        }
-        channel.basic_publish(exchange="", routing_key="notifications", body=json.dumps(message))
-        logging.info(f"✅ Уведомление отправлено пользователю {user.username} через RabbitMQ")
+    # Формируем сообщение для отправки в очередь
+    message = {
+        "notification_id": db_notification.id,
+        "title": notification.title,
+        "message": notification.message,
+    }
 
-        # Добавляем запись в таблицу user_notifications
-        user_notification = user_notifications.insert().values(user_id=user.id, notification_id=db_notification.id)
-        db.execute(user_notification)
-        db.commit()
-        logging.info(f"✅ Связь пользователя {user.username} с уведомлением добавлена в таблицу")
+    # Отправляем сообщение в очередь для обработки
+    channel.basic_publish(exchange="", routing_key="notification_tasks", body=json.dumps(message))
+    logging.info(f"✅ Задача по отправке уведомления добавлена в очередь RabbitMQ")
 
     connection.close()
 
-    return {"message": "Уведомления отправлены"}
+    return {"message": "Уведомление поставлено в очередь для отправки"}
+
+
+@router.post("/notifications", response_model=list[NotificationOut])
+async def get_user_notifications(
+    token: str = Depends(oauth2_scheme),  # Получаем токен из заголовка Authorization
+    db: Session = Depends(get_db),     # Подключение к базе данных
+):
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        username = payload.get("sub")
+
+        if not username:
+            raise HTTPException(status_code=400, detail="Invalid token")
+
+        user = db.query(User).filter(User.username == username).first()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Получаем уведомления для пользователя из промежуточной таблицы
+        notifications = db.query(Notification).join(
+            user_notifications, user_notifications.c.notification_id == Notification.id
+        ).filter(user_notifications.c.user_id == user.id).all()
+
+        if not notifications:
+            raise HTTPException(status_code=404, detail="No notifications found for this user")
+
+        return notifications
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
