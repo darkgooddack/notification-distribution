@@ -1,5 +1,4 @@
 import json
-import logging
 import pika
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -7,17 +6,19 @@ from app.models.base import get_db
 from app.models.user import User
 from app.models.notification import Notification
 from app.schemas.notification import NotificationCreate
-from app.core.config import settings
+import logging
 
 router = APIRouter()
 
-# Подключение к RabbitMQ
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 def get_rabbitmq_connection():
     try:
         connection = pika.BlockingConnection(pika.ConnectionParameters(host="localhost"))
+        logging.info(f"✅ Подключение к RabbitMQ успешно!")
         return connection
     except Exception as e:
-        logging.error(f"Ошибка подключения к RabbitMQ: {e}")
+        logging.error(f"❌ Ошибка подключения к RabbitMQ: {e}")
         return None
 
 
@@ -38,7 +39,7 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
     users = db.query(User).filter(User.receive_notifications == True).all()
 
     if not users:
-        logging.info("Нет пользователей с активными уведомлениями.")
+        logging.info("⚠️ Нет пользователей с активными уведомлениями.")
         return {"message": "Нет пользователей для уведомления"}
 
     # Создаём подключение к RabbitMQ
@@ -59,7 +60,7 @@ async def send_notifications(notification: NotificationCreate, db: Session = Dep
             "message": notification.message,
         }
         channel.basic_publish(exchange="", routing_key="notifications", body=json.dumps(message))
-        logging.info(f"Уведомление отправлено пользователю {user.username} через RabbitMQ")
+        logging.info(f"✅ Уведомление отправлено пользователю {user.username} через RabbitMQ")
 
     connection.close()
 
